@@ -198,17 +198,17 @@ namespace Emby.Server.Implementations.Playlists
             return Playlist.GetPlaylistItems(items, user, options);
         }
 
-        public Task AddItemToPlaylistAsync(Guid playlistId, IReadOnlyCollection<Guid> itemIds, Guid userId)
+        public Task AddItemToPlaylistAsync(Guid playlistId, IReadOnlyCollection<Guid> itemIds, Guid userId, bool allowDuplicates = false)
         {
             var user = userId.IsEmpty() ? null : _userManager.GetUserById(userId);
 
             return AddToPlaylistInternal(playlistId, itemIds, user, new DtoOptions(false)
             {
                 EnableImages = true
-            });
+            }, allowDuplicates);
         }
 
-        private async Task AddToPlaylistInternal(Guid playlistId, IReadOnlyCollection<Guid> newItemIds, User user, DtoOptions options)
+        private async Task AddToPlaylistInternal(Guid playlistId, IReadOnlyCollection<Guid> newItemIds, User user, DtoOptions options, bool allowDuplicates = false)
         {
             // Retrieve the existing playlist
             var playlist = _libraryManager.GetItemById(playlistId) as Playlist
@@ -218,22 +218,34 @@ namespace Emby.Server.Implementations.Playlists
             var newItems = GetPlaylistItems(newItemIds, user, options)
                 .Where(i => i.SupportsAddingToPlaylist);
 
-            // Filter out duplicate items
-            var existingIds = playlist.LinkedChildren.Select(c => c.ItemId).ToHashSet();
-            newItems = newItems
-                .Where(i => !existingIds.Contains(i.Id))
-                .Distinct();
+            IEnumerable<BaseItem> itemsToAdd;
+            if (allowDuplicates)
+            {
+                // When duplicates are allowed, add all items as-is
+                itemsToAdd = newItems;
+            }
+            else
+            {
+                // Filter out duplicate items
+                var existingIds = playlist.LinkedChildren.Select(c => c.ItemId).ToHashSet();
+                itemsToAdd = newItems
+                    .Where(i => !existingIds.Contains(i.Id))
+                    .Distinct();
+            }
 
             // Create a list of the new linked children to add to the playlist
-            var childrenToAdd = newItems
+            var childrenToAdd = itemsToAdd
                 .Select(LinkedChild.Create)
                 .ToList();
 
-            // Log duplicates that have been ignored, if any
-            int numDuplicates = newItemIds.Count - childrenToAdd.Count;
-            if (numDuplicates > 0)
+            // Log duplicates that have been ignored, if any (only when not allowing duplicates)
+            if (!allowDuplicates)
             {
-                _logger.LogWarning("Ignored adding {DuplicateCount} duplicate items to playlist {PlaylistName}.", numDuplicates, playlist.Name);
+                int numDuplicates = newItemIds.Count - childrenToAdd.Count;
+                if (numDuplicates > 0)
+                {
+                    _logger.LogWarning("Ignored adding {DuplicateCount} duplicate items to playlist {PlaylistName}.", numDuplicates, playlist.Name);
+                }
             }
 
             // Do nothing else if there are no items to add to the playlist
@@ -655,6 +667,108 @@ namespace Emby.Server.Implementations.Playlists
             {
                 SavePlaylistFile(playlist);
             }
+        }
+
+        /// <inheritdoc />
+        public async Task ShufflePlaylistAsync(Guid playlistId, Guid userId)
+        {
+            var playlist = _libraryManager.GetItemById(playlistId) as Playlist
+                ?? throw new ArgumentException("No Playlist exists with Id " + playlistId);
+
+            var children = playlist.LinkedChildren.ToArray();
+            Random.Shared.Shuffle(children);
+            playlist.LinkedChildren = children;
+
+            await UpdatePlaylistInternal(playlist).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public async Task SortPlaylistAsync(Guid playlistId, Guid userId, ItemSortBy sortBy, MediaBrowser.Model.Querying.SortOrder sortOrder)
+        {
+            var playlist = _libraryManager.GetItemById(playlistId) as Playlist
+                ?? throw new ArgumentException("No Playlist exists with Id " + playlistId);
+
+            // Get the linked children with their resolved items for sorting
+            var childrenWithItems = playlist.GetManageableItems()
+                .Select(tuple => (LinkedChild: tuple.Item1, Item: tuple.Item2))
+                .ToList();
+
+            // Sort based on the requested field
+            IOrderedEnumerable<(LinkedChild LinkedChild, BaseItem Item)> sorted = sortBy switch
+            {
+                ItemSortBy.Name or ItemSortBy.SortName => sortOrder == MediaBrowser.Model.Querying.SortOrder.Ascending
+                    ? childrenWithItems.OrderBy(x => x.Item.SortName ?? x.Item.Name)
+                    : childrenWithItems.OrderByDescending(x => x.Item.SortName ?? x.Item.Name),
+                ItemSortBy.Album => sortOrder == MediaBrowser.Model.Querying.SortOrder.Ascending
+                    ? childrenWithItems.OrderBy(x => x.Item.Album)
+                    : childrenWithItems.OrderByDescending(x => x.Item.Album),
+                ItemSortBy.AlbumArtist => sortOrder == MediaBrowser.Model.Querying.SortOrder.Ascending
+                    ? childrenWithItems.OrderBy(x => (x.Item as IHasAlbumArtist)?.AlbumArtists.FirstOrDefault() ?? string.Empty)
+                    : childrenWithItems.OrderByDescending(x => (x.Item as IHasAlbumArtist)?.AlbumArtists.FirstOrDefault() ?? string.Empty),
+                ItemSortBy.Artist => sortOrder == MediaBrowser.Model.Querying.SortOrder.Ascending
+                    ? childrenWithItems.OrderBy(x => (x.Item as IHasArtist)?.Artists.FirstOrDefault() ?? string.Empty)
+                    : childrenWithItems.OrderByDescending(x => (x.Item as IHasArtist)?.Artists.FirstOrDefault() ?? string.Empty),
+                ItemSortBy.Runtime => sortOrder == MediaBrowser.Model.Querying.SortOrder.Ascending
+                    ? childrenWithItems.OrderBy(x => x.Item.RunTimeTicks ?? 0)
+                    : childrenWithItems.OrderByDescending(x => x.Item.RunTimeTicks ?? 0),
+                ItemSortBy.DateCreated => sortOrder == MediaBrowser.Model.Querying.SortOrder.Ascending
+                    ? childrenWithItems.OrderBy(x => x.Item.DateCreated)
+                    : childrenWithItems.OrderByDescending(x => x.Item.DateCreated),
+                ItemSortBy.Random => childrenWithItems.OrderBy(_ => Random.Shared.Next()),
+                _ => sortOrder == MediaBrowser.Model.Querying.SortOrder.Ascending
+                    ? childrenWithItems.OrderBy(x => x.Item.SortName ?? x.Item.Name)
+                    : childrenWithItems.OrderByDescending(x => x.Item.SortName ?? x.Item.Name)
+            };
+
+            playlist.LinkedChildren = sorted.Select(x => x.LinkedChild).ToArray();
+
+            await UpdatePlaylistInternal(playlist).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public async Task MoveItemsAsync(Guid playlistId, Guid userId, IReadOnlyList<(string EntryId, int NewIndex)> moves)
+        {
+            if (moves.Count == 0)
+            {
+                return;
+            }
+
+            var playlist = _libraryManager.GetItemById(playlistId) as Playlist
+                ?? throw new ArgumentException("No Playlist exists with Id " + playlistId);
+
+            // Create a working list of the current children
+            var children = playlist.LinkedChildren.ToList();
+
+            // Sort moves by target index descending to process from highest to lowest
+            // This prevents earlier moves from affecting the indices of later moves
+            var sortedMoves = moves.OrderByDescending(m => m.NewIndex).ToList();
+
+            foreach (var (entryId, newIndex) in sortedMoves)
+            {
+                var currentIndex = children.FindIndex(c =>
+                    string.Equals(entryId, c.ItemId?.ToString("N", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase));
+
+                if (currentIndex == -1)
+                {
+                    _logger.LogWarning("Item {EntryId} not found in playlist {PlaylistId}", entryId, playlistId);
+                    continue;
+                }
+
+                if (currentIndex == newIndex)
+                {
+                    continue;
+                }
+
+                var item = children[currentIndex];
+                children.RemoveAt(currentIndex);
+
+                var targetIndex = Math.Clamp(newIndex, 0, children.Count);
+                children.Insert(targetIndex, item);
+            }
+
+            playlist.LinkedChildren = [.. children];
+
+            await UpdatePlaylistInternal(playlist).ConfigureAwait(false);
         }
     }
 }

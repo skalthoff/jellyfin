@@ -62,8 +62,9 @@ namespace MediaBrowser.Controller.Playlists
         /// <param name="playlistId">The playlist identifier.</param>
         /// <param name="itemIds">The item ids.</param>
         /// <param name="userId">The user identifier.</param>
+        /// <param name="allowDuplicates">Whether to allow adding duplicate items.</param>
         /// <returns>Task.</returns>
-        Task AddItemToPlaylistAsync(Guid playlistId, IReadOnlyCollection<Guid> itemIds, Guid userId);
+        Task AddItemToPlaylistAsync(Guid playlistId, IReadOnlyCollection<Guid> itemIds, Guid userId, bool allowDuplicates = false);
 
         /// <summary>
         /// Removes from playlist.
@@ -109,5 +110,32 @@ namespace MediaBrowser.Controller.Playlists
         /// </summary>
         /// <param name="item">The playlist.</param>
         void SavePlaylistFile(Playlist item);
+
+        /// <summary>
+        /// Shuffles the playlist items randomly.
+        /// </summary>
+        /// <param name="playlistId">The playlist identifier.</param>
+        /// <param name="userId">The user identifier.</param>
+        /// <returns>Task.</returns>
+        Task ShufflePlaylistAsync(Guid playlistId, Guid userId);
+
+        /// <summary>
+        /// Sorts the playlist items.
+        /// </summary>
+        /// <param name="playlistId">The playlist identifier.</param>
+        /// <param name="userId">The user identifier.</param>
+        /// <param name="sortBy">The field to sort by.</param>
+        /// <param name="sortOrder">The sort order.</param>
+        /// <returns>Task.</returns>
+        Task SortPlaylistAsync(Guid playlistId, Guid userId, Jellyfin.Data.Enums.ItemSortBy sortBy, MediaBrowser.Model.Querying.SortOrder sortOrder);
+
+        /// <summary>
+        /// Moves multiple items in a playlist to new positions.
+        /// </summary>
+        /// <param name="playlistId">The playlist identifier.</param>
+        /// <param name="userId">The user identifier.</param>
+        /// <param name="moves">The list of moves to perform (entry ID and new index).</param>
+        /// <returns>Task.</returns>
+        Task MoveItemsAsync(Guid playlistId, Guid userId, IReadOnlyList<(string EntryId, int NewIndex)> moves);
     }
 }

@@ -360,6 +360,7 @@ public class PlaylistsController : BaseJellyfinApiController
     /// <param name="playlistId">The playlist id.</param>
     /// <param name="ids">Item id, comma delimited.</param>
     /// <param name="userId">The userId.</param>
+    /// <param name="allowDuplicates">Whether to allow duplicate items. Default is false.</param>
     /// <response code="204">Items added to playlist.</response>
     /// <response code="403">Access forbidden.</response>
     /// <response code="404">Playlist not found.</response>
@@ -371,7 +372,8 @@ public class PlaylistsController : BaseJellyfinApiController
     public async Task<ActionResult> AddItemToPlaylist(
         [FromRoute, Required] Guid playlistId,
         [FromQuery, ModelBinder(typeof(CommaDelimitedCollectionModelBinder))] Guid[] ids,
-        [FromQuery] Guid? userId)
+        [FromQuery] Guid? userId,
+        [FromQuery] bool allowDuplicates = false)
     {
         userId = RequestHelpers.GetUserId(User, userId);
         var playlist = _playlistManager.GetPlaylistForUser(playlistId, userId.Value);
@@ -388,7 +390,7 @@ public class PlaylistsController : BaseJellyfinApiController
             return Forbid();
         }
 
-        await _playlistManager.AddItemToPlaylistAsync(playlistId, ids, userId.Value).ConfigureAwait(false);
+        await _playlistManager.AddItemToPlaylistAsync(playlistId, ids, userId.Value, allowDuplicates).ConfigureAwait(false);
         return NoContent();
     }
 
@@ -562,5 +564,115 @@ public class PlaylistsController : BaseJellyfinApiController
             dtos);
 
         return result;
+    }
+
+    /// <summary>
+    /// Shuffles the items in a playlist.
+    /// </summary>
+    /// <param name="playlistId">The playlist id.</param>
+    /// <response code="204">Playlist shuffled.</response>
+    /// <response code="403">Access forbidden.</response>
+    /// <response code="404">Playlist not found.</response>
+    /// <returns>An <see cref="NoContentResult"/> on success.</returns>
+    [HttpPost("{playlistId}/Shuffle")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> ShufflePlaylist(
+        [FromRoute, Required] Guid playlistId)
+    {
+        var callingUserId = User.GetUserId();
+        var playlist = _playlistManager.GetPlaylistForUser(playlistId, callingUserId);
+        if (playlist is null)
+        {
+            return NotFound("Playlist not found");
+        }
+
+        var isPermitted = playlist.OwnerUserId.Equals(callingUserId)
+            || playlist.Shares.Any(s => s.CanEdit && s.UserId.Equals(callingUserId));
+
+        if (!isPermitted)
+        {
+            return Forbid();
+        }
+
+        await _playlistManager.ShufflePlaylistAsync(playlistId, callingUserId).ConfigureAwait(false);
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Sorts the items in a playlist.
+    /// </summary>
+    /// <param name="playlistId">The playlist id.</param>
+    /// <param name="sortPlaylistRequest">The sort request.</param>
+    /// <response code="204">Playlist sorted.</response>
+    /// <response code="403">Access forbidden.</response>
+    /// <response code="404">Playlist not found.</response>
+    /// <returns>An <see cref="NoContentResult"/> on success.</returns>
+    [HttpPost("{playlistId}/Sort")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> SortPlaylist(
+        [FromRoute, Required] Guid playlistId,
+        [FromBody, Required] Models.PlaylistDtos.SortPlaylistDto sortPlaylistRequest)
+    {
+        var callingUserId = User.GetUserId();
+        var playlist = _playlistManager.GetPlaylistForUser(playlistId, callingUserId);
+        if (playlist is null)
+        {
+            return NotFound("Playlist not found");
+        }
+
+        var isPermitted = playlist.OwnerUserId.Equals(callingUserId)
+            || playlist.Shares.Any(s => s.CanEdit && s.UserId.Equals(callingUserId));
+
+        if (!isPermitted)
+        {
+            return Forbid();
+        }
+
+        await _playlistManager.SortPlaylistAsync(playlistId, callingUserId, sortPlaylistRequest.SortBy, sortPlaylistRequest.SortOrder).ConfigureAwait(false);
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Moves multiple items in a playlist.
+    /// </summary>
+    /// <param name="playlistId">The playlist id.</param>
+    /// <param name="movePlaylistItemsRequest">The request body containing items to move.</param>
+    /// <response code="204">Items moved.</response>
+    /// <response code="403">Access forbidden.</response>
+    /// <response code="404">Playlist not found.</response>
+    /// <returns>An <see cref="NoContentResult"/> on success.</returns>
+    [HttpPost("{playlistId}/Items/Move")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> MoveItems(
+        [FromRoute, Required] Guid playlistId,
+        [FromBody, Required] Models.PlaylistDtos.MovePlaylistItemsDto movePlaylistItemsRequest)
+    {
+        var callingUserId = User.GetUserId();
+        var playlist = _playlistManager.GetPlaylistForUser(playlistId, callingUserId);
+        if (playlist is null)
+        {
+            return NotFound("Playlist not found");
+        }
+
+        var isPermitted = playlist.OwnerUserId.Equals(callingUserId)
+            || playlist.Shares.Any(s => s.CanEdit && s.UserId.Equals(callingUserId));
+
+        if (!isPermitted)
+        {
+            return Forbid();
+        }
+
+        var moves = movePlaylistItemsRequest.Items
+            .Select(item => (item.PlaylistItemId, item.NewIndex))
+            .ToList();
+
+        await _playlistManager.MoveItemsAsync(playlistId, callingUserId, moves).ConfigureAwait(false);
+        return NoContent();
     }
 }
