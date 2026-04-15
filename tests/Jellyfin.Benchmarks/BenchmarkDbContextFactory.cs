@@ -71,6 +71,14 @@ public sealed class BenchmarkDbContextFactory
     {
         using var ctx = CreateDbContext();
         ctx.Database.EnsureCreated();
+
+        // Porcupine: apply aggressive SQLite tuning for read-heavy music workloads
+        ctx.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL");
+        ctx.Database.ExecuteSqlRaw("PRAGMA cache_size=-65536"); // 64MB cache (negative = KB)
+        ctx.Database.ExecuteSqlRaw("PRAGMA synchronous=NORMAL");
+        ctx.Database.ExecuteSqlRaw("PRAGMA temp_store=MEMORY");
+        ctx.Database.ExecuteSqlRaw("PRAGMA mmap_size=268435456"); // 256MB mmap
+        ctx.Database.ExecuteSqlRaw("PRAGMA page_size=8192"); // larger pages for bulk reads
     }
 
     /// <summary>
