@@ -3,7 +3,7 @@
 
 # Stage 1: Build the web client
 FROM node:22-slim AS web-build
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /web
 RUN git clone --depth 1 --branch master https://github.com/jellyfin/jellyfin-web.git . && \
     npm ci --no-audit && \
