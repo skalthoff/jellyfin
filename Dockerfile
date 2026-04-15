@@ -74,4 +74,5 @@ ENV JELLYFIN_DATA_DIR=/config \
 
 ENTRYPOINT ["dotnet", "jellyfin.dll", \
     "--datadir", "/config", \
-    "--cachedir", "/cache"]
+    "--cachedir", "/cache", \
+    "--nowebclient"]
