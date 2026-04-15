@@ -95,17 +95,30 @@ namespace MediaBrowser.Providers.MediaInfo
                     protocol = _mediaSourceManager.GetPathProtocol(path);
                 }
 
-                var result = await _mediaEncoder.GetMediaInfo(
-                    new MediaInfoRequest
-                    {
-                        MediaType = DlnaProfileType.Audio,
-                        MediaSource = new MediaSourceInfo
+                Model.MediaInfo.MediaInfo result;
+
+                // Porcupine: for local audio files, use ATL (in-process) instead of spawning FFProbe.
+                // ATL provides duration, bitrate, sample rate, channels, and codec info without process overhead.
+                // For 500k tracks this eliminates 500k FFProbe process spawns during library scan.
+                if (protocol == MediaProtocol.File)
+                {
+                    result = BuildMediaInfoFromATL(path);
+                }
+                else
+                {
+                    // Fall back to FFProbe for non-file protocols (remote streams, etc.)
+                    result = await _mediaEncoder.GetMediaInfo(
+                        new MediaInfoRequest
                         {
-                            Path = path,
-                            Protocol = protocol
-                        }
-                    },
-                    cancellationToken).ConfigureAwait(false);
+                            MediaType = DlnaProfileType.Audio,
+                            MediaSource = new MediaSourceInfo
+                            {
+                                Path = path,
+                                Protocol = protocol
+                            }
+                        },
+                        cancellationToken).ConfigureAwait(false);
+                }
 
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -113,6 +126,41 @@ namespace MediaBrowser.Providers.MediaInfo
             }
 
             return ItemUpdateType.MetadataImport;
+        }
+
+        /// <summary>
+        /// Builds a MediaInfo object from ATL's Track class without spawning FFProbe.
+        /// </summary>
+        private Model.MediaInfo.MediaInfo BuildMediaInfoFromATL(string path)
+        {
+            var track = new Track(path);
+            var mediaInfo = new Model.MediaInfo.MediaInfo
+            {
+                RunTimeTicks = TimeSpan.FromMilliseconds(track.DurationMs).Ticks,
+                Bitrate = (int)(track.Bitrate * 1000), // ATL reports kbps, Jellyfin uses bps
+                Container = track.AudioFormat?.ShortName,
+                Name = track.Title,
+                Album = track.Album,
+                IndexNumber = track.TrackNumber,
+                ParentIndexNumber = track.DiscNumber,
+                ProductionYear = track.Year is null or 0 ? null : track.Year,
+                MediaStreams =
+                [
+                    new MediaStream
+                    {
+                        Type = MediaStreamType.Audio,
+                        Codec = track.AudioFormat?.ShortName?.ToLowerInvariant(),
+                        SampleRate = (int)track.SampleRate,
+                        ChannelLayout = track.ChannelsArrangement?.Description,
+                        Channels = track.ChannelsArrangement?.NbChannels ?? 2,
+                        BitRate = (int)(track.Bitrate * 1000),
+                        Index = 0,
+                        IsDefault = true,
+                    }
+                ],
+            };
+
+            return mediaInfo;
         }
 
         /// <summary>
