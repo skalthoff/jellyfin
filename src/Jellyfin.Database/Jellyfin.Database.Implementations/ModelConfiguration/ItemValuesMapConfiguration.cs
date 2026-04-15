@@ -15,5 +15,9 @@ public class ItemValuesMapConfiguration : IEntityTypeConfiguration<ItemValueMap>
         builder.HasKey(e => new { e.ItemValueId, e.ItemId });
         builder.HasOne(e => e.Item);
         builder.HasOne(e => e.ItemValue);
+
+        // Porcupine: index for lookups by ItemId (the hot path for artist/genre filtering).
+        // The composite key has ItemValueId first, so lookups by ItemId require a full scan.
+        builder.HasIndex(e => new { e.ItemId, e.ItemValueId });
     }
 }

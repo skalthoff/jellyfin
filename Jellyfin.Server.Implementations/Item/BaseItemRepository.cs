@@ -446,7 +446,19 @@ public sealed class BaseItemRepository
 
         if (filter.DtoOptions.EnableUserData)
         {
-            dbQuery = dbQuery.Include(e => e.UserData);
+            // Porcupine: scope UserData to the requesting user only.
+            // Without this, ALL users' play state is loaded for every item.
+            // For 500k items × 10 users = 5M rows loaded per query.
+            // EF Core filtered Include reduces this to exactly 1 user's data per item.
+            if (filter.User is not null)
+            {
+                var userId = filter.User.Id;
+                dbQuery = dbQuery.Include(e => e.UserData!.Where(ud => ud.UserId.Equals(userId)));
+            }
+            else
+            {
+                dbQuery = dbQuery.Include(e => e.UserData);
+            }
         }
 
         if (filter.DtoOptions.EnableImages)
@@ -484,7 +496,17 @@ public sealed class BaseItemRepository
     private IQueryable<BaseItemEntity> PrepareItemQuery(JellyfinDbContext context, InternalItemsQuery filter)
     {
         IQueryable<BaseItemEntity> dbQuery = context.BaseItems.AsNoTracking();
-        dbQuery = dbQuery.AsSingleQuery();
+
+        // Porcupine: use AsSplitQuery by default to avoid cartesian explosion with Includes.
+        // However, queries that filter on UserData in the WHERE clause (IsPlayed, IsFavorite, IsResumable)
+        // perform better with AsSingleQuery because split queries re-evaluate the WHERE per split.
+        bool hasUserDataWhereClause = filter.IsPlayed.HasValue
+            || filter.IsFavorite.HasValue
+            || filter.IsResumable.HasValue
+            || filter.IsLiked.HasValue
+            || filter.IsFavoriteOrLiked.HasValue;
+
+        dbQuery = hasUserDataWhereClause ? dbQuery.AsSingleQuery() : dbQuery.AsSplitQuery();
 
         return dbQuery;
     }

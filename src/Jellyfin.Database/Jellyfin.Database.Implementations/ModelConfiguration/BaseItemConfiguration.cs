@@ -56,6 +56,11 @@ public class BaseItemConfiguration : IEntityTypeConfiguration<BaseItemEntity>
         // resume
         builder.HasIndex(e => new { e.MediaType, e.TopParentId, e.IsVirtualItem, e.PresentationUniqueKey });
 
+        // Porcupine: covering index for music listing queries (albums/tracks sorted by name within a library)
+        builder.HasIndex(e => new { e.TopParentId, e.Type, e.SortName });
+        // Porcupine: covering index for "recently added" queries
+        builder.HasIndex(e => new { e.Type, e.TopParentId, e.DateCreated, e.SortName });
+
         builder.HasData(new BaseItemEntity()
         {
             Id = Guid.Parse("00000000-0000-0000-0000-000000000001"),

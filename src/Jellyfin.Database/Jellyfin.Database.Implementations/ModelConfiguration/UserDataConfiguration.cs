@@ -18,5 +18,9 @@ public class UserDataConfiguration : IEntityTypeConfiguration<UserData>
         builder.HasIndex(d => new { d.ItemId, d.UserId, d.IsFavorite });
         builder.HasIndex(d => new { d.ItemId, d.UserId, d.LastPlayedDate });
         builder.HasOne(e => e.Item).WithMany(e => e.UserData);
+
+        // Porcupine: user-first index for efficient per-user joins and "recently played" queries
+        builder.HasIndex(d => new { d.UserId, d.ItemId });
+        builder.HasIndex(d => new { d.UserId, d.Played, d.LastPlayedDate });
     }
 }

@@ -69,16 +69,40 @@ public static class JellyfinQueryHelperExtensions
         IList<Guid> referenceIds,
         bool invert = false)
     {
+        // Porcupine: fully materialize the lookup chain to eliminate the O(n×m) correlated subquery.
+        // Old pattern: for each candidate item, JOIN ItemValues→ItemValuesMap→BaseItems by CleanName.
+        // New pattern: 3 fast queries → simple IN clause.
+
+        // Step 1: get CleanNames for the referenced items
         var itemFilter = OneOrManyExpressionBuilder<BaseItemEntity, Guid>(referenceIds, f => f.Id);
         var typeFilter = OneOrManyExpressionBuilder<ItemValue, ItemValueType>(itemValueTypes, iv => iv.Type);
 
-        return baseQuery.Where(item =>
-            context.ItemValues
-                .Where(typeFilter)
-                .Join(context.ItemValuesMap, e => e.ItemValueId, e => e.ItemValueId, (itemVal, map) => new { itemVal, map })
-                .Any(val =>
-                    context.BaseItems.Where(itemFilter).Any(e => e.CleanName == val.itemVal.CleanValue)
-                    && val.map.ItemId == item.Id) == EF.Constant(!invert));
+        // Step 2: resolve matching ItemValueIds
+        var cleanNames = context.BaseItems
+            .Where(itemFilter)
+            .Select(b => b.CleanName)
+            .ToList();
+
+        var matchingValueIds = context.ItemValues
+            .Where(typeFilter)
+            .Where(iv => cleanNames.Contains(iv.CleanValue))
+            .Select(iv => iv.ItemValueId)
+            .ToList();
+
+        // Step 3: resolve matching ItemIds from the join table
+        var matchingItemIds = context.ItemValuesMap
+            .Where(m => matchingValueIds.Contains(m.ItemValueId))
+            .Select(m => m.ItemId)
+            .Distinct()
+            .ToList();
+
+        // Step 4: simple IN clause — no correlated subquery
+        if (invert)
+        {
+            return baseQuery.Where(item => !matchingItemIds.Contains(item.Id));
+        }
+
+        return baseQuery.Where(item => matchingItemIds.Contains(item.Id));
     }
 
     /// <summary>
@@ -95,20 +119,32 @@ public static class JellyfinQueryHelperExtensions
         IList<Guid> referenceIds,
         bool invert = false)
     {
-        // Well genre/artist/album etc items do not actually set the ItemValue of thier specitic types so we cannot match it that way.
-        /*
-        "(guid in (select itemid from ItemValues where CleanValue = (select CleanName from TypedBaseItems where guid=@GenreIds and Type=2)))"
-        */
-
+        // Porcupine: materialize lookup chain to avoid correlated subquery.
         var itemFilter = OneOrManyExpressionBuilder<BaseItemEntity, Guid>(referenceIds, f => f.Id);
 
-        return item =>
-          context.ItemValues
-              .Join(context.ItemValuesMap, e => e.ItemValueId, e => e.ItemValueId, (item, map) => new { item, map })
-              .Any(val =>
-                  val.item.Type == itemValueType
-                  && context.BaseItems.Where(itemFilter).Any(e => e.CleanName == val.item.CleanValue)
-                  && val.map.ItemId == item.Id) == EF.Constant(!invert);
+        var cleanNames = context.BaseItems
+            .Where(itemFilter)
+            .Select(b => b.CleanName)
+            .ToList();
+
+        var matchingValueIds = context.ItemValues
+            .Where(iv => iv.Type == itemValueType)
+            .Where(iv => cleanNames.Contains(iv.CleanValue))
+            .Select(iv => iv.ItemValueId)
+            .ToList();
+
+        var matchingItemIds = context.ItemValuesMap
+            .Where(m => matchingValueIds.Contains(m.ItemValueId))
+            .Select(m => m.ItemId)
+            .Distinct()
+            .ToList();
+
+        if (invert)
+        {
+            return item => !matchingItemIds.Contains(item.Id);
+        }
+
+        return item => matchingItemIds.Contains(item.Id);
     }
 
     /// <summary>
