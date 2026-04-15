@@ -95,18 +95,21 @@ namespace MediaBrowser.Providers.MediaInfo
                     protocol = _mediaSourceManager.GetPathProtocol(path);
                 }
 
+                // Porcupine: read ATL Track ONCE upfront for both media info and tag extraction.
+                // The original code read the file twice: FFProbe for media info, then ATL for tags.
+                // For local files, ATL provides sufficient media info (duration, bitrate, streams)
+                // so we use it for both purposes, eliminating the FFProbe process spawn.
+                // FFProbe is retained as fallback for remote protocols and when ATL fails.
+                Track? atlTrack = null;
                 Model.MediaInfo.MediaInfo result;
 
-                // Porcupine: for local audio files, use ATL (in-process) instead of spawning FFProbe.
-                // ATL provides duration, bitrate, sample rate, channels, and codec info without process overhead.
-                // For 500k tracks this eliminates 500k FFProbe process spawns during library scan.
                 if (protocol == MediaProtocol.File)
                 {
-                    result = BuildMediaInfoFromATL(path);
+                    atlTrack = new Track(path);
+                    result = BuildMediaInfoFromATL(atlTrack);
                 }
                 else
                 {
-                    // Fall back to FFProbe for non-file protocols (remote streams, etc.)
                     result = await _mediaEncoder.GetMediaInfo(
                         new MediaInfoRequest
                         {
@@ -122,28 +125,22 @@ namespace MediaBrowser.Providers.MediaInfo
 
                 cancellationToken.ThrowIfCancellationRequested();
 
-                await FetchAsync(item, result, options, cancellationToken).ConfigureAwait(false);
+                await FetchAsync(item, result, options, atlTrack, cancellationToken).ConfigureAwait(false);
             }
 
             return ItemUpdateType.MetadataImport;
         }
 
         /// <summary>
-        /// Builds a MediaInfo object from ATL's Track class without spawning FFProbe.
+        /// Builds a MediaInfo object from an already-parsed ATL Track without spawning FFProbe.
         /// </summary>
-        private Model.MediaInfo.MediaInfo BuildMediaInfoFromATL(string path)
+        private static Model.MediaInfo.MediaInfo BuildMediaInfoFromATL(Track track)
         {
-            var track = new Track(path);
-            var mediaInfo = new Model.MediaInfo.MediaInfo
+            return new Model.MediaInfo.MediaInfo
             {
                 RunTimeTicks = TimeSpan.FromMilliseconds(track.DurationMs).Ticks,
                 Bitrate = (int)(track.Bitrate * 1000), // ATL reports kbps, Jellyfin uses bps
                 Container = track.AudioFormat?.ShortName,
-                Name = track.Title,
-                Album = track.Album,
-                IndexNumber = track.TrackNumber,
-                ParentIndexNumber = track.DiscNumber,
-                ProductionYear = track.Year is null or 0 ? null : track.Year,
                 MediaStreams =
                 [
                     new MediaStream
@@ -159,8 +156,6 @@ namespace MediaBrowser.Providers.MediaInfo
                     }
                 ],
             };
-
-            return mediaInfo;
         }
 
         /// <summary>
@@ -169,12 +164,14 @@ namespace MediaBrowser.Providers.MediaInfo
         /// <param name="audio">The <see cref="Audio"/>.</param>
         /// <param name="mediaInfo">The <see cref="Model.MediaInfo.MediaInfo"/>.</param>
         /// <param name="options">The <see cref="MetadataRefreshOptions"/>.</param>
+        /// <param name="atlTrack">Pre-parsed ATL Track to reuse for tag extraction, or null to create a new one.</param>
         /// <param name="cancellationToken">The <see cref="CancellationToken"/>.</param>
         /// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
         private async Task FetchAsync(
             Audio audio,
             Model.MediaInfo.MediaInfo mediaInfo,
             MetadataRefreshOptions options,
+            Track? atlTrack,
             CancellationToken cancellationToken)
         {
             audio.Container = mediaInfo.Container;
@@ -189,7 +186,7 @@ namespace MediaBrowser.Providers.MediaInfo
 
             if (!audio.IsLocked)
             {
-                await FetchDataFromTags(audio, mediaInfo, options, tryExtractEmbeddedLyrics).ConfigureAwait(false);
+                await FetchDataFromTags(audio, mediaInfo, options, tryExtractEmbeddedLyrics, atlTrack).ConfigureAwait(false);
                 if (tryExtractEmbeddedLyrics)
                 {
                     AddExternalLyrics(audio, mediaStreams, options);
@@ -208,10 +205,14 @@ namespace MediaBrowser.Providers.MediaInfo
         /// <param name="mediaInfo">The <see cref="Model.MediaInfo.MediaInfo"/>.</param>
         /// <param name="options">The <see cref="MetadataRefreshOptions"/>.</param>
         /// <param name="tryExtractEmbeddedLyrics">Whether to extract embedded lyrics to lrc file. </param>
-        private async Task FetchDataFromTags(Audio audio, Model.MediaInfo.MediaInfo mediaInfo, MetadataRefreshOptions options, bool tryExtractEmbeddedLyrics)
+        /// <param name="atlTrack">Pre-parsed ATL Track to reuse, or null to create a new one.</param>
+        private async Task FetchDataFromTags(Audio audio, Model.MediaInfo.MediaInfo mediaInfo, MetadataRefreshOptions options, bool tryExtractEmbeddedLyrics, Track? atlTrack = null)
         {
             var libraryOptions = _libraryManager.GetLibraryOptions(audio);
-            Track track = new Track(audio.Path);
+
+            // Porcupine: reuse the ATL Track parsed in Probe() instead of re-reading the file.
+            // When atlTrack is null (FFProbe path), create a new one as before.
+            Track track = atlTrack ?? new Track(audio.Path);
 
             if (track.MetadataFormats
                 .All(mf => string.Equals(mf.ShortName, "ID3v1", StringComparison.OrdinalIgnoreCase)))
