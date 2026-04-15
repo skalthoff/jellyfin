@@ -191,26 +191,32 @@ public class MusicQueryBenchmarks
     /// Simulates: GET /Items?IncludeItemTypes=Audio&amp;SortBy=DatePlayed&amp;SortOrder=Descending
     /// Recently played — requires UserData join.
     /// </summary>
-    [Benchmark(Description = "Recently played tracks (UserData join)")]
+    [Benchmark(Description = "Recently played tracks (flipped: UserData-first)")]
     public int RecentlyPlayed()
     {
         using var ctx = _factory.CreateDbContext();
         var libId = _libraryId;
         var uid = _userId;
 
-        // Porcupine: use AsSingleQuery for queries with UserData WHERE clauses
-        var query = ctx.BaseItems.AsNoTracking().AsSingleQuery()
-            .Where(e => e.Type == "Audio")
-            .Where(e => e.TopParentId.HasValue && e.TopParentId.Value.Equals(libId))
-            .Where(e => e.UserData!.Any(ud => ud.UserId.Equals(uid) && ud.Played))
+        // Porcupine: flip the query — start from UserData (small per-user), not BaseItems (500k).
+        // Old: scan 500k Audio items → correlated subquery on UserData for each → sort by LastPlayedDate
+        // New: scan UserData for this user → get top 50 played ItemIds → load those BaseItems
+
+        // Step 1: index scan on UserData(UserId, Played, LastPlayedDate) — fast, ~100k rows for this user
+        var recentItemIds = ctx.UserData
+            .Where(ud => ud.UserId.Equals(uid) && ud.Played && ud.LastPlayedDate.HasValue)
+            .OrderByDescending(ud => ud.LastPlayedDate)
+            .Select(ud => ud.ItemId)
+            .Take(50)
+            .ToList();
+
+        // Step 2: PK lookups for those 50 items with Includes
+        var results = ctx.BaseItems.AsNoTracking().AsSplitQuery()
+            .Where(e => recentItemIds.Contains(e.Id))
             .Include(e => e.UserData!.Where(ud => ud.UserId.Equals(uid)))
             .Include(e => e.Images)
-            .OrderByDescending(e => e.UserData!
-                .Where(ud => ud.UserId.Equals(uid))
-                .Max(ud => ud.LastPlayedDate))
-            .Take(50);
+            .ToList();
 
-        var results = query.ToList();
         return results.Count;
     }
 
