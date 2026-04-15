@@ -80,12 +80,13 @@ public sealed class SqliteDatabaseProvider : IJellyfinDatabaseProvider
                 warnings.Ignore(RelationalEventId.NonTransactionalMigrationOperationWarning))
             .AddInterceptors(new PragmaConnectionInterceptor(
                 _logger,
-                GetOption<int?>(customOptions, "cacheSize", e => int.Parse(e, CultureInfo.InvariantCulture)),
+                // Porcupine: default to 64MB cache (negative = KB) for large music libraries
+                GetOption(customOptions, "cacheSize", e => int.Parse(e, CultureInfo.InvariantCulture), () => -65536),
                 GetOption(customOptions, "lockingmode", e => e, () => "NORMAL")!,
                 GetOption(customOptions, "journalsizelimit", int.Parse, () => 134_217_728),
                 GetOption(customOptions, "tempstoremode", int.Parse, () => 2),
                 GetOption(customOptions, "syncmode", int.Parse, () => 1),
-                customOptions?.Where(e => e.Key.StartsWith("#PRAGMA:", StringComparison.OrdinalIgnoreCase)).ToDictionary(e => e.Key["#PRAGMA:".Length..], e => e.Value) ?? []));
+                BuildMusicOptimizedPragmas(customOptions)));
 
         var enableSensitiveDataLogging = GetOption(customOptions, "EnableSensitiveDataLogging", e => e.Equals(bool.TrueString, StringComparison.OrdinalIgnoreCase), () => false);
         if (enableSensitiveDataLogging)
@@ -93,6 +94,29 @@ public sealed class SqliteDatabaseProvider : IJellyfinDatabaseProvider
             options.EnableSensitiveDataLogging(enableSensitiveDataLogging);
             _logger.LogInformation("EnableSensitiveDataLogging is enabled on SQLite connection");
         }
+    }
+
+    /// <summary>
+    /// Builds the pragma dictionary with Porcupine music-optimized defaults merged with user overrides.
+    /// </summary>
+    private static Dictionary<string, string> BuildMusicOptimizedPragmas(ICollection<CustomDatabaseOption>? customOptions)
+    {
+        // Porcupine defaults for read-heavy music workloads
+        var pragmas = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["mmap_size"] = "268435456", // 256MB memory-mapped I/O for fast reads
+        };
+
+        // Merge user overrides from config
+        if (customOptions is not null)
+        {
+            foreach (var opt in customOptions.Where(e => e.Key.StartsWith("#PRAGMA:", StringComparison.OrdinalIgnoreCase)))
+            {
+                pragmas[opt.Key["#PRAGMA:".Length..]] = opt.Value;
+            }
+        }
+
+        return pragmas;
     }
 
     /// <inheritdoc/>
