@@ -15,7 +15,7 @@ namespace Jellyfin.Server.Implementations.Migrations
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "9.0.9");
+            modelBuilder.HasAnnotation("ProductVersion", "10.0.5");
 
             modelBuilder.Entity("Jellyfin.Database.Implementations.Entities.AccessSchedule", b =>
                 {
@@ -371,6 +371,8 @@ namespace Jellyfin.Server.Implementations.Migrations
 
                     b.HasIndex("TopParentId", "Id");
 
+                    b.HasIndex("TopParentId", "Type", "SortName");
+
                     b.HasIndex("Type", "TopParentId", "Id");
 
                     b.HasIndex("Type", "TopParentId", "PresentationUniqueKey");
@@ -384,6 +386,8 @@ namespace Jellyfin.Server.Implementations.Migrations
                     b.HasIndex("Type", "SeriesPresentationUniqueKey", "IsFolder", "IsVirtualItem");
 
                     b.HasIndex("Type", "SeriesPresentationUniqueKey", "PresentationUniqueKey", "SortName");
+
+                    b.HasIndex("Type", "TopParentId", "DateCreated", "SortName");
 
                     b.HasIndex("IsFolder", "TopParentId", "IsVirtualItem", "PresentationUniqueKey", "DateCreated");
 
@@ -757,7 +761,7 @@ namespace Jellyfin.Server.Implementations.Migrations
 
                     b.HasKey("ItemValueId", "ItemId");
 
-                    b.HasIndex("ItemId");
+                    b.HasIndex("ItemId", "ItemValueId");
 
                     b.ToTable("ItemValuesMap");
 
@@ -1396,7 +1400,7 @@ namespace Jellyfin.Server.Implementations.Migrations
 
                     b.HasKey("ItemId", "UserId", "CustomDataKey");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("UserId", "ItemId");
 
                     b.HasIndex("ItemId", "UserId", "IsFavorite");
 
@@ -1405,6 +1409,8 @@ namespace Jellyfin.Server.Implementations.Migrations
                     b.HasIndex("ItemId", "UserId", "PlaybackPositionTicks");
 
                     b.HasIndex("ItemId", "UserId", "Played");
+
+                    b.HasIndex("UserId", "Played", "LastPlayedDate");
 
                     b.ToTable("UserData");
 
