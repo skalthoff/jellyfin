@@ -1,6 +1,16 @@
 # Porcupine: multi-stage build for music-optimized Jellyfin server
 # Produces a minimal runtime image with FFmpeg for audio transcoding
 
+# Stage 1: Build the web client
+FROM node:22-slim AS web-build
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+WORKDIR /web
+RUN git clone --depth 1 --branch master https://github.com/jellyfin/jellyfin-web.git . && \
+    npm ci --no-audit && \
+    npm run build:production
+# Output is in /web/dist
+
+# Stage 2: Build the server
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
@@ -41,23 +51,20 @@ RUN dotnet publish Jellyfin.Server/Jellyfin.Server.csproj \
     -p:DebugSymbols=false \
     -p:DebugType=none
 
-# Runtime image
+# Stage 3: Runtime image
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 
-# Install FFmpeg for audio transcoding fallback
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install font packages for Skia (image processing)
+# Install FFmpeg for audio transcoding fallback and font deps for Skia
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        ffmpeg \
         libfontconfig1 \
         libfreetype6 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=build /app .
+COPY --from=web-build /web/dist /app/jellyfin-web
 
 # Jellyfin default ports
 EXPOSE 8096 8920
@@ -74,5 +81,4 @@ ENV JELLYFIN_DATA_DIR=/config \
 
 ENTRYPOINT ["dotnet", "jellyfin.dll", \
     "--datadir", "/config", \
-    "--cachedir", "/cache", \
-    "--nowebclient"]
+    "--cachedir", "/cache"]
