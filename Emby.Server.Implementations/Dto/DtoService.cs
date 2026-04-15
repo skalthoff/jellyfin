@@ -160,10 +160,44 @@ namespace Emby.Server.Implementations.Dto
             List<(BaseItem, BaseItemDto)>? programTuples = null;
             List<(BaseItemDto, LiveTvChannel)>? channelTuples = null;
 
+            // Porcupine: batch-resolve all artist names across all items in ONE query
+            // instead of N per-item queries. Collects unique names, does single DB lookup.
+            IReadOnlyDictionary<string, MusicArtist[]>? batchedArtistLookup = null;
+            var allArtistNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var item in accessibleItems)
+            {
+                if (item is IHasArtist hasArtist)
+                {
+                    foreach (var name in hasArtist.Artists)
+                    {
+                        if (!string.IsNullOrWhiteSpace(name))
+                        {
+                            allArtistNames.Add(name);
+                        }
+                    }
+                }
+
+                if (item is IHasAlbumArtist hasAlbumArtist)
+                {
+                    foreach (var name in hasAlbumArtist.AlbumArtists)
+                    {
+                        if (!string.IsNullOrWhiteSpace(name))
+                        {
+                            allArtistNames.Add(name);
+                        }
+                    }
+                }
+            }
+
+            if (allArtistNames.Count > 0)
+            {
+                batchedArtistLookup = _libraryManager.GetArtists([.. allArtistNames]);
+            }
+
             for (int index = 0; index < accessibleItems.Count; index++)
             {
                 var item = accessibleItems[index];
-                var dto = GetBaseItemDtoInternal(item, options, user, owner);
+                var dto = GetBaseItemDtoInternal(item, options, user, owner, batchedArtistLookup);
 
                 if (item is LiveTvChannel tvChannel)
                 {
@@ -215,7 +249,7 @@ namespace Emby.Server.Implementations.Dto
             return dto;
         }
 
-        private BaseItemDto GetBaseItemDtoInternal(BaseItem item, DtoOptions options, User? user = null, BaseItem? owner = null)
+        private BaseItemDto GetBaseItemDtoInternal(BaseItem item, DtoOptions options, User? user = null, BaseItem? owner = null, IReadOnlyDictionary<string, MusicArtist[]>? batchedArtistLookup = null)
         {
             var dto = new BaseItemDto
             {
@@ -268,7 +302,7 @@ namespace Emby.Server.Implementations.Dto
                 AttachStudios(dto, item);
             }
 
-            AttachBasicFields(dto, item, owner, options);
+            AttachBasicFields(dto, item, owner, options, batchedArtistLookup);
 
             if (options.ContainsField(ItemFields.CanDelete))
             {
@@ -815,7 +849,8 @@ namespace Emby.Server.Implementations.Dto
         /// <param name="item">The item.</param>
         /// <param name="owner">The owner.</param>
         /// <param name="options">The options.</param>
-        private void AttachBasicFields(BaseItemDto dto, BaseItem item, BaseItem? owner, DtoOptions options)
+        /// <param name="batchedArtistLookup">Pre-resolved artist lookup cache from batch processing, or null for single-item path.</param>
+        private void AttachBasicFields(BaseItemDto dto, BaseItem item, BaseItem? owner, DtoOptions options, IReadOnlyDictionary<string, MusicArtist[]>? batchedArtistLookup = null)
         {
             if (options.ContainsField(ItemFields.DateCreated))
             {
@@ -1040,27 +1075,10 @@ namespace Emby.Server.Implementations.Dto
             {
                 dto.Artists = hasArtist.Artists;
 
-                // var artistItems = _libraryManager.GetArtists(new InternalItemsQuery
-                // {
-                //    EnableTotalRecordCount = false,
-                //    ItemIds = new[] { item.Id.ToString("N", CultureInfo.InvariantCulture) }
-                // });
-
-                // dto.ArtistItems = artistItems.Items
-                //    .Select(i =>
-                //    {
-                //        var artist = i.Item1;
-                //        return new NameIdPair
-                //        {
-                //            Name = artist.Name,
-                //            Id = artist.Id.ToString("N", CultureInfo.InvariantCulture)
-                //        };
-                //    })
-                //    .ToList();
-
-                // Include artists that are not in the database yet, e.g., just added via metadata editor
-                // var foundArtists = artistItems.Items.Select(i => i.Item1.Name).ToList();
-                var artistsLookup = _libraryManager.GetArtists([.. hasArtist.Artists.Where(e => !string.IsNullOrWhiteSpace(e))]);
+                // Porcupine: use the batched artist lookup if available (from GetBaseItemDtos),
+                // otherwise fall back to per-item lookup (from GetBaseItemDto single-item path).
+                var artistsLookup = batchedArtistLookup
+                    ?? _libraryManager.GetArtists([.. hasArtist.Artists.Where(e => !string.IsNullOrWhiteSpace(e))]);
 
                 dto.ArtistItems = hasArtist.Artists
                     .Where(name => !string.IsNullOrWhiteSpace(name))
@@ -1076,25 +1094,9 @@ namespace Emby.Server.Implementations.Dto
             {
                 dto.AlbumArtist = hasAlbumArtist.AlbumArtists.FirstOrDefault();
 
-                // var artistItems = _libraryManager.GetAlbumArtists(new InternalItemsQuery
-                // {
-                //    EnableTotalRecordCount = false,
-                //    ItemIds = new[] { item.Id.ToString("N", CultureInfo.InvariantCulture) }
-                // });
-
-                // dto.AlbumArtists = artistItems.Items
-                //    .Select(i =>
-                //    {
-                //        var artist = i.Item1;
-                //        return new NameIdPair
-                //        {
-                //            Name = artist.Name,
-                //            Id = artist.Id.ToString("N", CultureInfo.InvariantCulture)
-                //        };
-                //    })
-                //    .ToList();
-
-                var albumArtistsLookup = _libraryManager.GetArtists([.. hasAlbumArtist.AlbumArtists.Where(e => !string.IsNullOrWhiteSpace(e))]);
+                // Porcupine: reuse the same batched lookup (album artists are in the same table)
+                var albumArtistsLookup = batchedArtistLookup
+                    ?? _libraryManager.GetArtists([.. hasAlbumArtist.AlbumArtists.Where(e => !string.IsNullOrWhiteSpace(e))]);
 
                 dto.AlbumArtists = hasAlbumArtist.AlbumArtists
                     .Where(name => !string.IsNullOrWhiteSpace(name))
